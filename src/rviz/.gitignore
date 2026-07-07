@@ -1,0 +1,11 @@
+*~
+*.pyc
+bin
+build
+lib
+*.sublime-workspace
+**/.idea/**
+*.project
+*.cproject
+.externalToolBuilders/*
+.vscode/

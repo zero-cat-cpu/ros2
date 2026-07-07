@@ -1,0 +1,44 @@
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Changelog for package rosidl_core_generators
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+0.5.0 (2026-05-05)
+------------------
+
+0.4.3 (2026-04-20)
+------------------
+
+0.4.2 (2026-04-09)
+------------------
+
+0.4.1 (2025-10-07)
+------------------
+* Revert "Revert "Added rosidl_generator_rs (`#7 <https://github.com/ros2/rosidl_core/issues/7>`_)" (`#8 <https://github.com/ros2/rosidl_core/issues/8>`_)" (`#9 <https://github.com/ros2/rosidl_core/issues/9>`_)
+* fix cmake deprecation (`#10 <https://github.com/ros2/rosidl_core/issues/10>`_)
+* Contributors: Esteve Fernandez, mosfet80
+
+0.4.0 (2025-04-25)
+------------------
+
+0.3.1 (2024-06-17)
+------------------
+* Add mechanism to disable workaround for dependency groups (`#3 <https://github.com/ros2/rosidl_core/issues/3>`_)
+* Contributors: Scott K Logan
+
+0.3.0 (2024-04-26)
+------------------
+
+0.2.0 (2023-04-28)
+------------------
+
+0.1.1 (2023-02-13)
+------------------
+* [rolling] Update maintainers - 2022-11-07 (`#2 <https://github.com/ros2/rosidl_core/issues/2>`_)
+* Contributors: Audrow Nash
+
+0.1.0 (2022-09-08)
+------------------
+* Add generators and runtime configuration packages (`#1 <https://github.com/ros2/rosidl_core/issues/1>`_)
+  Moved (and renamed) from rosidl_defaults.
+  Related PR: https://github.com/ros2/rosidl_defaults/pull/22
+* Contributors: Jacob Perron

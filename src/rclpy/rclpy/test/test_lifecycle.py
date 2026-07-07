@@ -1,0 +1,220 @@
+# Copyright 2021 Open Source Robotics Foundation, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from threading import Thread
+from typing import Any
+from typing import Literal
+from unittest import mock
+
+import lifecycle_msgs.msg
+from lifecycle_msgs.srv import ChangeState
+from lifecycle_msgs.srv import GetAvailableStates
+from lifecycle_msgs.srv import GetAvailableTransitions
+from lifecycle_msgs.srv import GetState
+
+import pytest
+from pytest import FixtureRequest
+
+import rclpy
+from rclpy.client import Client
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.lifecycle import LifecycleNode
+from rclpy.lifecycle import LifecycleState
+from rclpy.lifecycle import TransitionCallbackReturn
+from rclpy.node import Node
+from rclpy.publisher import BasePublisher
+
+from test_msgs.msg import BasicTypes
+
+
+def test_lifecycle_node_init() -> None:
+    rclpy.init()
+    node = LifecycleNode('test_lifecycle_node_init_1')
+    assert node
+    node.destroy_node()
+    node = LifecycleNode('test_lifecycle_node_init_2', enable_communication_interface=False)
+    assert node
+    # Make sure services were not created
+    assert not hasattr(node, '_service_change_state')
+    assert not hasattr(node, '_service_get_state')
+    assert not hasattr(node, '_service_get_available_states')
+    assert not hasattr(node, '_service_get_available_transitions')
+    assert not hasattr(node, '_service_get_transition_graph')
+    # Make sure also that the services were not created in the pybind11 plugin
+    assert not node._state_machine.service_change_state
+    assert not node._state_machine.service_get_state
+    assert not node._state_machine.service_get_available_states
+    assert not node._state_machine.service_get_available_transitions
+    assert not node._state_machine.service_get_transition_graph
+    node.destroy_node()
+    with pytest.raises(TypeError):
+        LifecycleNode('test_lifecycle_node_init_3',
+                      enable_communication_interface='asd')  # type: ignore[arg-type]
+
+
+def test_lifecycle_state_transitions() -> None:
+    node = LifecycleNode(
+        'test_lifecycle_state_transitions_1', enable_communication_interface=False)
+    # normal transitions
+    assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+    # test many times back to back, to make sure it works robustly
+    for _ in range(10):
+        assert node.trigger_cleanup() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+    for _ in range(10):
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_deactivate() == TransitionCallbackReturn.SUCCESS
+    assert node.trigger_cleanup() == TransitionCallbackReturn.SUCCESS
+    # some that are not possible from the current state
+    assert node.trigger_shutdown() == TransitionCallbackReturn.SUCCESS
+    node.destroy_node()
+    # Again but trigger shutdown from 'inactive' instead of 'unconfigured'
+    node = LifecycleNode(
+        'test_lifecycle_state_transitions_2', enable_communication_interface=False)
+    assert node.trigger_shutdown() == TransitionCallbackReturn.SUCCESS
+    # Again but trigger shutdown from 'active'
+    node = LifecycleNode(
+        'test_lifecycle_state_transitions_3', enable_communication_interface=False)
+    assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+    assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+    assert node.trigger_shutdown() == TransitionCallbackReturn.SUCCESS
+
+    class ErrorOnConfigureHandledCorrectlyNode(LifecycleNode):
+
+        def on_configure(self, state: LifecycleState) -> Literal[TransitionCallbackReturn.ERROR]:
+            return TransitionCallbackReturn.ERROR
+
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, **kwargs)
+
+    node = ErrorOnConfigureHandledCorrectlyNode(
+        'test_lifecycle_state_transitions_2', enable_communication_interface=False)
+    assert node._state_machine.current_state[1] == 'unconfigured'
+    assert node.trigger_configure() == TransitionCallbackReturn.ERROR
+    assert node._state_machine.current_state[1] == 'unconfigured'
+
+    class ErrorOnConfigureHandledInCorrectlyNode(LifecycleNode):
+
+        def on_configure(self, state: LifecycleState) -> Literal[TransitionCallbackReturn.ERROR]:
+            return TransitionCallbackReturn.ERROR
+
+        def on_error(self, state: LifecycleState) -> Literal[TransitionCallbackReturn.ERROR]:
+            return TransitionCallbackReturn.ERROR
+
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, **kwargs)
+
+    node = ErrorOnConfigureHandledInCorrectlyNode(
+        'test_lifecycle_state_transitions_3', enable_communication_interface=False)
+    assert node.trigger_configure() == TransitionCallbackReturn.ERROR
+    assert node._state_machine.current_state[1] == 'finalized'
+
+
+def test_lifecycle_services(request: FixtureRequest) -> None:
+    lc_node_name = 'test_lifecycle_services_lifecycle'
+    lc_node = LifecycleNode(lc_node_name)
+    client_node = Node('test_lifecycle_services_client')
+    get_state_cli = client_node.create_client(
+        GetState,
+        f'/{lc_node_name}/get_state')
+    change_state_cli = client_node.create_client(
+        ChangeState,
+        f'/{lc_node_name}/change_state')
+    get_available_states_cli = client_node.create_client(
+        GetAvailableStates,
+        f'/{lc_node_name}/get_available_states')
+    get_available_transitions_cli = client_node.create_client(
+            GetAvailableTransitions,
+            f'/{lc_node_name}/get_available_transitions')
+    get_transition_graph_cli = client_node.create_client(
+        GetAvailableTransitions,
+        f'/{lc_node_name}/get_transition_graph')
+
+    clis: tuple[Client[Any, Any], ...] = (
+        get_state_cli,
+        change_state_cli,
+        get_available_states_cli,
+        get_available_transitions_cli,
+        get_transition_graph_cli,
+    )
+
+    for cli in clis:
+        assert cli.wait_for_service(5.)
+    # lunch a thread to spin the executor, so we can make sync service calls easily
+    executor = SingleThreadedExecutor()
+    executor.add_node(client_node)
+    executor.add_node(lc_node)
+    thread = Thread(target=executor.spin)
+    thread.start()
+
+    def cleanup() -> None:
+        # Stop executor and join thread.
+        # This cleanup is run even if an assertion fails.
+        executor.shutdown()
+        thread.join()
+    request.addfinalizer(cleanup)
+
+    # test all services
+    get_req = GetState.Request()
+    get_resp = get_state_cli.call(get_req)
+    assert get_resp
+    assert get_resp.current_state.label == 'unconfigured'
+    change_req = ChangeState.Request()
+    change_req.transition.id = lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE
+    change_resp = change_state_cli.call(change_req)
+    assert change_resp
+    assert change_resp.success
+    get_req = GetState.Request()
+    get_resp = get_state_cli.call(get_req)
+    assert get_resp
+    assert get_resp.current_state.label == 'inactive'
+    get_states_req = GetAvailableStates.Request()
+    get_states_resp = get_available_states_cli.call(get_states_req)
+    assert get_states_resp
+    states_labels = {state.label for state in get_states_resp.available_states}
+    assert states_labels == {
+        'unknown', 'unconfigured', 'inactive', 'active', 'finalized', 'configuring', 'cleaningup',
+        'shuttingdown', 'activating', 'deactivating', 'errorprocessing'
+    }
+    get_transitions_req = GetAvailableTransitions.Request()
+    get_transitions_resp = get_available_transitions_cli.call(get_transitions_req)
+    assert get_transitions_resp
+    transitions_labels = {
+        transition_def.transition.label
+        for transition_def in get_transitions_resp.available_transitions}
+    assert transitions_labels == {'activate', 'cleanup', 'shutdown'}
+    get_transitions_req = GetAvailableTransitions.Request()
+    get_transitions_resp = get_transition_graph_cli.call(get_transitions_req)
+    assert get_transitions_resp
+    transitions_labels = {
+        transition_def.transition.label
+        for transition_def in get_transitions_resp.available_transitions}
+    assert transitions_labels == {
+        'configure', 'activate', 'cleanup', 'shutdown', 'deactivate', 'transition_error',
+        'transition_failure', 'transition_success'
+    }
+
+
+def test_lifecycle_publisher() -> None:
+    node = LifecycleNode('test_lifecycle_publisher', enable_communication_interface=False)
+    with mock.patch.object(BasePublisher, 'publish') as mock_publish:
+        pub = node.create_lifecycle_publisher(BasicTypes, 'test_lifecycle_publisher_topic', 10)
+        pub.publish(BasicTypes())
+        mock_publish.assert_not_called()
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        node.trigger_activate()
+        msg = BasicTypes()
+        pub.publish(msg)
+        mock_publish.assert_called()
+        mock_publish.assert_called_with(pub, msg)

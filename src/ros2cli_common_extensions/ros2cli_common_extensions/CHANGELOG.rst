@@ -1,0 +1,49 @@
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Changelog for package ros2cli_common_extensions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+0.6.0 (2026-05-06)
+------------------
+
+0.5.2 (2025-12-10)
+------------------
+* Add dependency on ros2plugin in package.xml (`#13 <https://github.com/ros2/ros2cli_common_extensions/issues/13>`_)
+* Contributors: Maurice Alexander Purnawan
+
+0.5.1 (2025-07-01)
+------------------
+* Update CMakeLists.txt (`#11 <https://github.com/ros2/ros2cli_common_extensions/issues/11>`_)
+* Contributors: mosfet80
+
+0.5.0 (2025-04-25)
+------------------
+
+0.4.0 (2024-04-26)
+------------------
+
+0.3.0 (2023-04-28)
+------------------
+
+0.2.2 (2023-02-14)
+------------------
+* [rolling] Update maintainers - 2022-11-07 (`#7 <https://github.com/ros2/ros2cli_common_extensions/issues/7>`_)
+* Contributors: Audrow Nash
+
+0.2.1 (2022-09-13)
+------------------
+* Update maintainers (`#6 <https://github.com/ros2/ros2cli_common_extensions/issues/6>`_)
+* Contributors: methylDragon
+
+0.2.0 (2022-04-29)
+------------------
+
+0.1.1 (2021-03-18)
+------------------
+* remove maintainer (`#5 <https://github.com/ros2/ros2cli_common_extensions/issues/5>`_)
+* update maintainer (`#4 <https://github.com/ros2/ros2cli_common_extensions/issues/4>`_)
+* Contributors: Claire Wang
+
+0.1.0 (2020-07-13)
+------------------
+* First implementation (`#2 <https://github.com/ros2/ros2cli_common_extensions/issues/2>`_)
+* Contributors: Bo Sun

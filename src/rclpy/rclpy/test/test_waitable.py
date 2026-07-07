@@ -1,0 +1,514 @@
+# Copyright 2018 Open Source Robotics Foundation, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+import threading
+import time
+from types import TracebackType
+from typing import Any
+from typing import Optional
+from typing import TYPE_CHECKING
+from typing import Union
+import unittest
+
+import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.clock import Clock
+from rclpy.clock_type import ClockType
+import rclpy.context
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile
+from rclpy.task import Future
+from rclpy.type_support import check_for_type_support
+from rclpy.waitable import NumberOfEntities
+from rclpy.waitable import Waitable
+
+from test_msgs.msg import Empty as EmptyMsg
+from test_msgs.srv import Empty as EmptySrv
+
+from typing_extensions import TypeAlias
+
+
+check_for_type_support(EmptyMsg)
+check_for_type_support(EmptySrv)
+
+
+class ClientWaitable(Waitable[Optional[tuple[_rclpy.rmw_service_info_t, EmptySrv.Response]]]):
+
+    def __init__(self, node: Node):
+        super().__init__(ReentrantCallbackGroup())
+
+        with node.handle:
+            self.client = _rclpy.Client(
+                node.handle, EmptySrv, 'test_client', QoSProfile(depth=10).get_c_qos_profile())
+        self.client_index: int
+        self.client_is_ready = False
+
+        self.node = node
+        self.future: Future[dict[str, EmptySrv.Response]]
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        pass
+
+    def is_ready(self, wait_set: _rclpy.WaitSet) -> bool:
+        """Return True if entities are ready in the wait set."""
+        if wait_set.is_ready('client', self.client_index):
+            self.client_is_ready = True
+        return self.client_is_ready
+
+    def take_data(self) -> Optional[tuple[_rclpy.rmw_service_info_t, EmptySrv.Response]]:
+        """Take stuff from lower level so the wait set doesn't immediately wake again."""
+        if self.client_is_ready:
+            self.client_is_ready = False
+            taken_response = self.client.take_response(EmptySrv.Response)
+            if taken_response[0] is None:
+                return None
+            return taken_response
+        return None
+
+    async def execute(self, taken_data: Optional[tuple[_rclpy.rmw_service_info_t,
+                                                       EmptySrv.Response]]) -> None:
+        """Execute work after data has been taken from a ready wait set."""
+        test_data = {}
+        if isinstance(taken_data, tuple) and isinstance(taken_data[1], EmptySrv.Response):
+            test_data['client'] = taken_data[1]
+        self.future.set_result(test_data)
+
+    def get_num_entities(self) -> NumberOfEntities:
+        """Return number of each type of entity used."""
+        return NumberOfEntities(0, 0, 0, 1, 0)
+
+    def add_to_wait_set(self, wait_set: _rclpy.WaitSet) -> None:
+        """Add entities to wait set."""
+        self.client_index = wait_set.add_client(self.client)
+
+
+class ServerWaitable(Waitable[Optional[tuple[EmptySrv.Request, _rclpy.rmw_service_info_t]]]):
+
+    def __init__(self, node: Node):
+        super().__init__(ReentrantCallbackGroup())
+
+        with node.handle:
+            self.server = _rclpy.Service(
+                node.handle, EmptySrv, 'test_server', QoSProfile(depth=10).get_c_qos_profile())
+        self.server_index: int
+        self.server_is_ready = False
+
+        self.node = node
+        self.future: Future[dict[str, EmptySrv.Request]]
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        pass
+
+    def is_ready(self, wait_set: _rclpy.WaitSet) -> bool:
+        """Return True if entities are ready in the wait set."""
+        if wait_set.is_ready('service', self.server_index):
+            self.server_is_ready = True
+        return self.server_is_ready
+
+    def take_data(self) -> Optional[tuple[EmptySrv.Request, _rclpy.rmw_service_info_t]]:
+        """Take stuff from lower level so the wait set doesn't immediately wake again."""
+        if self.server_is_ready:
+            self.server_is_ready = False
+            taken_request = self.server.service_take_request(EmptySrv.Request)
+            if taken_request[0] is None:
+                return None
+            return taken_request
+        return None
+
+    async def execute(self, taken_data: Optional[tuple[EmptySrv.Request,
+                                                       _rclpy.rmw_service_info_t]]) -> None:
+        """Execute work after data has been taken from a ready wait set."""
+        test_data = {}
+        if isinstance(taken_data, tuple) and isinstance(taken_data[0], EmptySrv.Request):
+            test_data['server'] = taken_data[0]
+        self.future.set_result(test_data)
+
+    def get_num_entities(self) -> NumberOfEntities:
+        """Return number of each type of entity used."""
+        return NumberOfEntities(0, 0, 0, 0, 1)
+
+    def add_to_wait_set(self, wait_set: _rclpy.WaitSet) -> None:
+        """Add entities to wait set."""
+        self.server_index = wait_set.add_service(self.server)
+
+
+class TimerWaitable(Waitable[Optional[str]]):
+
+    def __init__(self, node: Node):
+        super().__init__(ReentrantCallbackGroup())
+
+        self._clock = Clock(clock_type=ClockType.STEADY_TIME)
+        period_nanoseconds = 10000
+        assert node.context.handle
+        with self._clock.handle, node.context.handle:
+            self.timer = _rclpy.Timer(
+                self._clock.handle, node.context.handle, period_nanoseconds, True)
+        self.timer_index: int
+        self.timer_is_ready = False
+
+        self.node = node
+        self.future: Future[dict[str, str]]
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        pass
+
+    def is_ready(self, wait_set: _rclpy.WaitSet) -> bool:
+        """Return True if entities are ready in the wait set."""
+        if wait_set.is_ready('timer', self.timer_index):
+            self.timer_is_ready = True
+        return self.timer_is_ready
+
+    def take_data(self) -> Optional[str]:
+        """Take stuff from lower level so the wait set doesn't immediately wake again."""
+        if self.timer_is_ready:
+            self.timer_is_ready = False
+            self.timer.call_timer_with_info()
+            return 'timer'
+        return None
+
+    async def execute(self, taken_data: Optional[str]) -> None:
+        """Execute work after data has been taken from a ready wait set."""
+        test_data = {}
+        if 'timer' == taken_data:
+            test_data['timer'] = taken_data
+        self.future.set_result(test_data)
+
+    def get_num_entities(self) -> NumberOfEntities:
+        """Return number of each type of entity used."""
+        return NumberOfEntities(0, 0, 1, 0, 0)
+
+    def add_to_wait_set(self, wait_set: _rclpy.WaitSet) -> None:
+        """Add entities to wait set."""
+        self.timer_index = wait_set.add_timer(self.timer)
+
+
+class SubscriptionWaitable(Waitable[Optional[EmptyMsg]]):
+
+    def __init__(self, node: Node):
+        super().__init__(ReentrantCallbackGroup())
+
+        with node.handle:
+            self.subscription = _rclpy.Subscription(
+                node.handle, EmptyMsg, 'test_topic', QoSProfile(depth=10).get_c_qos_profile())
+        self.subscription_index: int
+        self.subscription_is_ready = False
+
+        self.node = node
+        self.future: Future[dict[str, EmptyMsg]]
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        pass
+
+    def is_ready(self, wait_set: _rclpy.WaitSet) -> bool:
+        """Return True if entities are ready in the wait set."""
+        if wait_set.is_ready('subscription', self.subscription_index):
+            self.subscription_is_ready = True
+        return self.subscription_is_ready
+
+    def take_data(self) -> Optional[EmptyMsg]:
+        """Take stuff from lower level so the wait set doesn't immediately wake again."""
+        if self.subscription_is_ready:
+            self.subscription_is_ready = False
+            msg_info = self.subscription.take_message(EmptyMsg, False)
+            if msg_info is not None:
+                return msg_info[0]
+        return None
+
+    async def execute(self, taken_data: Optional[EmptyMsg]) -> None:
+        """Execute work after data has been taken from a ready wait set."""
+        test_data = {}
+        if isinstance(taken_data, EmptyMsg):
+            test_data['subscription'] = taken_data
+        self.future.set_result(test_data)
+
+    def get_num_entities(self) -> NumberOfEntities:
+        """Return number of each type of entity used."""
+        return NumberOfEntities(1, 0, 0, 0, 0)
+
+    def add_to_wait_set(self, wait_set: _rclpy.WaitSet) -> None:
+        """Add entities to wait set."""
+        self.subscription_index = wait_set.add_subscription(
+            self.subscription)
+
+
+class GuardConditionWaitable(Waitable[Optional[str]]):
+
+    def __init__(self, node: Node):
+        super().__init__(ReentrantCallbackGroup())
+
+        assert node.context.handle
+        with node.context.handle:
+            self.guard_condition = _rclpy.GuardCondition(node.context.handle)
+        self.guard_condition_index: int
+        self.guard_is_ready = False
+
+        self.node = node
+        self.future: Future[dict[str, bool]]
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        pass
+
+    def is_ready(self, wait_set: _rclpy.WaitSet) -> bool:
+        """Return True if entities are ready in the wait set."""
+        if wait_set.is_ready('guard_condition', self.guard_condition_index):
+            self.guard_is_ready = True
+        return self.guard_is_ready
+
+    def take_data(self) -> Optional[str]:
+        """Take stuff from lower level so the wait set doesn't immediately wake again."""
+        if self.guard_is_ready:
+            self.guard_is_ready = False
+            return 'guard_condition'
+        return None
+
+    async def execute(self, taken_data: Optional[str]) -> None:
+        """Execute work after data has been taken from a ready wait set."""
+        test_data = {}
+        if 'guard_condition' == taken_data:
+            test_data['guard_condition'] = True
+        self.future.set_result(test_data)
+
+    def get_num_entities(self) -> NumberOfEntities:
+        """Return number of each type of entity used."""
+        return NumberOfEntities(0, 1, 0, 0, 0)
+
+    def add_to_wait_set(self, wait_set: _rclpy.WaitSet) -> None:
+        """Add entities to wait set."""
+        self.guard_condition_index = wait_set.add_guard_condition(self.guard_condition)
+
+
+class MutuallyExclusiveWaitable(Waitable[None]):
+
+    def __init__(self) -> None:
+        super().__init__(MutuallyExclusiveCallbackGroup())
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(
+        self,
+        exc_type: Optional[type[BaseException]],
+        exc_val: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
+        pass
+
+    def is_ready(self, wait_set: _rclpy.WaitSet) -> bool:
+        return False
+
+    def take_data(self) -> None:
+        return None
+
+    async def execute(self, taken_data: None) -> None:
+        pass
+
+    def get_num_entities(self) -> NumberOfEntities:
+        return NumberOfEntities(0, 0, 0, 0, 0)
+
+    def add_to_wait_set(self, wait_set: _rclpy.WaitSet) -> None:
+        pass
+
+
+_Waitables: TypeAlias = Union[ClientWaitable, ServerWaitable, TimerWaitable,
+                              SubscriptionWaitable, GuardConditionWaitable]
+
+
+class TestWaitable(unittest.TestCase):
+
+    if TYPE_CHECKING:
+        node: rclpy.node.Node
+        context: rclpy.context.Context
+        executor: SingleThreadedExecutor
+        waitable: Waitable[Any]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.context = rclpy.context.Context()
+        rclpy.init(context=cls.context)
+        cls.node = rclpy.create_node(
+            'TestWaitable', namespace='/rclpy/test', context=cls.context,
+            allow_undeclared_parameters=True)
+        cls.executor = SingleThreadedExecutor(context=cls.context)
+        cls.executor.add_node(cls.node)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.executor.shutdown()
+        cls.node.destroy_node()
+        rclpy.shutdown(context=cls.context)
+
+    def start_spin_thread(self, waitable: _Waitables) -> threading.Thread:
+        waitable.future = Future(executor=self.executor)
+        self.thr = threading.Thread(
+            target=self.executor.spin_until_future_complete, args=(waitable.future,), daemon=True)
+        self.thr.start()
+        return self.thr
+
+    def setUp(self) -> None:
+        pass
+
+    def tearDown(self) -> None:
+        self.node.remove_waitable(self.waitable)
+        # Ensure resources inside the waitable are destroyed before the node in tearDownClass
+        del self.waitable
+
+    def test_waitable_with_client(self) -> None:
+        self.waitable = ClientWaitable(self.node)
+        self.node.add_waitable(self.waitable)
+
+        server = self.node.create_service(EmptySrv, 'test_client', lambda req, resp: resp)
+
+        while not self.waitable.client.service_server_is_available():
+            time.sleep(0.1)
+
+        thr = self.start_spin_thread(self.waitable)
+        self.waitable.client.send_request(EmptySrv.Request())
+        thr.join()
+
+        assert self.waitable.future.done()
+        result = self.waitable.future.result()
+        assert result
+        assert isinstance(result['client'], EmptySrv.Response)
+        self.node.destroy_service(server)
+
+    def test_waitable_with_server(self) -> None:
+        self.waitable = ServerWaitable(self.node)
+        self.node.add_waitable(self.waitable)
+        client = self.node.create_client(EmptySrv, 'test_server')
+
+        thr = self.start_spin_thread(self.waitable)
+        client.call_async(EmptySrv.Request())
+        thr.join()
+
+        assert self.waitable.future.done()
+        result = self.waitable.future.result()
+        assert result
+        assert isinstance(result['server'], EmptySrv.Request)
+        self.node.destroy_client(client)
+
+    def test_waitable_with_timer(self) -> None:
+        self.waitable = TimerWaitable(self.node)
+        self.node.add_waitable(self.waitable)
+
+        thr = self.start_spin_thread(self.waitable)
+        thr.join()
+
+        assert self.waitable.future.done()
+        result = self.waitable.future.result()
+        assert result
+        assert result['timer']
+
+    def test_waitable_with_subscription(self) -> None:
+        self.waitable = SubscriptionWaitable(self.node)
+        self.node.add_waitable(self.waitable)
+        pub = self.node.create_publisher(EmptyMsg, 'test_topic', 1)
+
+        thr = self.start_spin_thread(self.waitable)
+        pub.publish(EmptyMsg())
+        thr.join()
+
+        assert self.waitable.future.done()
+        result = self.waitable.future.result()
+        assert result
+        assert isinstance(result['subscription'], EmptyMsg)
+        self.node.destroy_publisher(pub)
+
+    def test_waitable_with_guard_condition(self) -> None:
+        self.waitable = GuardConditionWaitable(self.node)
+        self.node.add_waitable(self.waitable)
+
+        thr = self.start_spin_thread(self.waitable)
+        self.waitable.guard_condition.trigger_guard_condition()
+        thr.join()
+
+        assert self.waitable.future.done()
+        result = self.waitable.future.result()
+        assert result
+        assert result['guard_condition']
+
+    # Test that waitable doesn't crash with MutuallyExclusiveCallbackGroup
+    # https://github.com/ros2/rclpy/issues/264
+    def test_waitable_with_mutually_exclusive_callback_group(self) -> None:
+        self.waitable = MutuallyExclusiveWaitable()
+        self.node.add_waitable(self.waitable)
+        self.executor.spin_once(timeout_sec=0.1)
+
+
+class TestNumberOfEntities(unittest.TestCase):
+
+    def test_add(self) -> None:
+        n1 = NumberOfEntities(1, 2, 3, 4, 5, 6)
+        n2 = NumberOfEntities(10, 20, 30, 40, 50, 60)
+        n = n1 + n2
+        assert n.num_subscriptions == 11
+        assert n.num_guard_conditions == 22
+        assert n.num_timers == 33
+        assert n.num_clients == 44
+        assert n.num_services == 55
+        assert n.num_events == 66
+
+    def test_add_assign(self) -> None:
+        n1 = NumberOfEntities(1, 2, 3, 4, 5, 6)
+        n2 = NumberOfEntities(10, 20, 30, 40, 50, 60)
+        n1 += n2
+        assert n1.num_subscriptions == 11
+        assert n1.num_guard_conditions == 22
+        assert n1.num_timers == 33
+        assert n1.num_clients == 44
+        assert n1.num_services == 55
+        assert n1.num_events == 66
